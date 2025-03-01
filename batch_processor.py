@@ -46,10 +46,13 @@ def ensure_output_folder(path):
     os.makedirs(path, exist_ok=True)
 
 
-def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format):
+def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
     """
-    Tiling a single image. Returns a list of tile file paths.
-    Checks stop_event to allow stopping mid-process.
+    Tiles a single image and returns a list of tile file paths.
+    
+    If pad_to_square is True, then if a tile is smaller than tile_size x tile_size,
+    the tile is pasted at the top-left corner of a new black image of size tile_size x tile_size.
+    This ensures the original image content remains anchored and any missing area is padded.
     """
     if stop_event.is_set():
         return []
@@ -82,6 +85,15 @@ def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption
             right = min(left + tile_size, image_width)
             lower = min(upper + tile_size, image_height)
             tile = image.crop((left, upper, right, lower))
+            # If padding is enabled and the tile isn't full size,
+            # create a new black image and paste the tile at the top-left.
+            if pad_to_square:
+                current_width, current_height = tile.size
+                if current_width != tile_size or current_height != tile_size:
+                    new_tile = Image.new("RGB", (tile_size, tile_size), color=(0, 0, 0))
+                    new_tile.paste(tile, (0, 0))
+                    tile = new_tile
+
             base_name = os.path.splitext(os.path.basename(image_path))[0]
             file_extension = "jpg" if save_format == "JPEG" else "png"
             tile_filename = f"{base_name}_tile_{i}_{j}.{file_extension}"
@@ -97,9 +109,9 @@ def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption
     return tile_paths
 
 
-def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format):
+def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
     """
-    Tiling an entire folder of images. Returns (message, list_of_tile_paths).
+    Tiles an entire folder of images. Returns (message, list_of_tile_paths).
     """
     valid, msg = check_output_empty(output_path)
     if not valid:
@@ -117,7 +129,7 @@ def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, n
                 return "Process stopped by user.", all_tile_paths
             if filename.lower().endswith((".png", ".jpg", ".jpeg", ".heic", ".cr2", ".nef", ".arw", ".dng")):
                 image_path = os.path.join(folder_path, filename)
-                tile_paths = tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format)
+                tile_paths = tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square)
                 all_tile_paths.extend(tile_paths)
                 if stop_event.is_set():
                     return "Process stopped by user.", all_tile_paths
@@ -143,14 +155,14 @@ def create_zip(output_path):
         return f"Error creating ZIP: {str(e)}"
 
 
-def on_tiling(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format):
+def on_tiling(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
     """Gradio event handler for the Tiling tab."""
-    message, tile_paths = process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format)
+    message, tile_paths = process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square)
     return message, tile_paths
 
 
 # --------------------------------------------------------------------------------
-# OTHER TASKS (Tabs 2, 4, 5, 6)
+# OTHER TASKS (Tabs 2, 3, 4, 5, 6)
 # --------------------------------------------------------------------------------
 
 def merge_text_files(input_folder, output_folder):
@@ -179,10 +191,6 @@ def merge_text_files(input_folder, output_folder):
 
 
 def convert_images(input_folder, output_folder, old_format, new_format, jpg_quality, png_compression):
-    """
-    Convert images by opening them with Pillow (or imageio for RAW/animated formats)
-    and saving them in the new format. Uses JPEG quality and PNG compression settings.
-    """
     valid, msg = check_output_empty(output_folder)
     if not valid:
         return msg
@@ -192,7 +200,6 @@ def convert_images(input_folder, output_folder, old_format, new_format, jpg_qual
     new_ext = new_format.lower()
     processed_any = False
 
-    # List of RAW formats supported via imageio
     raw_formats = ["cr2", "nef", "arw", "dng"]
 
     try:
@@ -204,15 +211,13 @@ def convert_images(input_folder, output_folder, old_format, new_format, jpg_qual
                 base = os.path.splitext(fname)[0]
                 new_name = base + "." + new_ext
                 target = os.path.join(output_folder, new_name)
-                # Use imageio for RAW images or if improved handling for GIF/WebP is desired
                 if old_ext in raw_formats:
                     if iio is not None:
                         arr = iio.imread(source)
                         im = Image.fromarray(arr)
                     else:
-                        continue  # Skip if imageio not available
+                        continue
                 elif old_ext in ["gif", "webp"] and iio is not None:
-                    # Use imageio to read the first frame
                     arr = iio.imread(source)
                     if isinstance(arr, list) and len(arr) > 0:
                         im = Image.fromarray(arr[0])
@@ -220,7 +225,6 @@ def convert_images(input_folder, output_folder, old_format, new_format, jpg_qual
                         im = Image.fromarray(arr)
                 else:
                     im = Image.open(source)
-                # Convert & save in new format
                 if new_ext in ["jpg", "jpeg"]:
                     im = im.convert("RGB")
                     im.save(target, format="JPEG", quality=int(jpg_quality))
@@ -338,15 +342,7 @@ def split_large_text(input_file, output_folder, lines_per_file):
         return f"Error: {str(e)}"
 
 
-# --------------------------------------------------------------------------------
-# Dynamic UI update for Image Format Converter settings
-# --------------------------------------------------------------------------------
-
 def update_conversion_settings(out_format):
-    """
-    Update the visibility of conversion settings based on the selected output format.
-    Shows the JPEG Quality slider if JPEG is selected, PNG Compression slider if PNG is selected.
-    """
     out_format = out_format.lower()
     if out_format in ["jpg", "jpeg"]:
         return gr.update(visible=True), gr.update(visible=False)
@@ -374,6 +370,7 @@ def build_ui():
                     tile_size_input = gr.Number(value=1024, label="Tile Size (pixels)")
                     overlap_ratio_input = gr.Slider(0, 1, value=0.5, step=0.1, label="Overlap Ratio")
                     padding_input = gr.Number(value=10, label="Padding (pixels)")
+                    pad_to_square_checkbox = gr.Checkbox(label="Pad to Square (fill missing areas with black)", value=False)
                     num_tiles_input = gr.Number(value=0, label="Number of Tiles (0 = Use Tile Size)")
                 caption_text_input = gr.Textbox(label="Manual Caption (Optional)")
                 output_format_input = gr.Radio(choices=["None", "JPG", "PNG"], value="None", label="Output Image Format")
@@ -383,7 +380,9 @@ def build_ui():
                 tile_gallery = gr.Gallery(label="Tiled Images", show_label=False, height=400)
                 zip_btn = gr.Button("Download Processed Tiles")
                 zip_output = gr.File(label="ZIP File")
-                tile_btn.click(on_tiling, inputs=[folder_input, tile_size_input, overlap_ratio_input, padding_input, num_tiles_input, caption_text_input, output_path_input, output_format_input], outputs=[tile_output, tile_gallery])
+                tile_btn.click(on_tiling, 
+                               inputs=[folder_input, tile_size_input, overlap_ratio_input, padding_input, num_tiles_input, caption_text_input, output_path_input, output_format_input, pad_to_square_checkbox], 
+                               outputs=[tile_output, tile_gallery])
                 stop_tile_btn.click(stop_process, outputs=tile_output)
                 zip_btn.click(create_zip, inputs=output_path_input, outputs=zip_output)
                 
@@ -406,13 +405,11 @@ def build_ui():
                 with gr.Row():
                     old_format_dropdown = gr.Dropdown(choices=["jpg", "png", "bmp", "tiff", "gif", "webp", "heic", "cr2", "nef", "arw", "dng"], label="Input Format", value="jpg")
                     new_format_dropdown = gr.Dropdown(choices=["jpg", "png", "bmp", "tiff", "gif", "webp"], label="Output Format", value="jpg")
-                # Dynamic sliders: JPEG quality and PNG compression level.
                 jpg_quality_slider = gr.Slider(minimum=1, maximum=100, value=85, label="JPEG Quality", visible=True)
                 png_compression_slider = gr.Slider(minimum=0, maximum=9, value=6, label="PNG Compression Level", visible=False)
                 conv_btn = gr.Button("Process")
                 stop_conv_btn = gr.Button("Stop")
                 conv_output = gr.Textbox(label="Status", interactive=False)
-                # Update dynamic UI when output format changes
                 new_format_dropdown.change(update_conversion_settings, inputs=new_format_dropdown, outputs=[jpg_quality_slider, png_compression_slider])
                 conv_btn.click(convert_images, inputs=[in_conv, out_conv, old_format_dropdown, new_format_dropdown, jpg_quality_slider, png_compression_slider], outputs=conv_output)
                 stop_conv_btn.click(stop_process, outputs=conv_output)
@@ -464,4 +461,5 @@ def build_ui():
 
 if __name__ == "__main__":
     demo = build_ui()
-    demo.launch(server_name="127.0.0.1", server_port=7864, inbrowser=True)
+    # Launch the Gradio app. Make sure the output folder (or its parent) is within allowed_paths.
+    demo.launch(server_name="127.0.0.1", server_port=7868, inbrowser=True, allowed_paths=[os.getcwd()])
