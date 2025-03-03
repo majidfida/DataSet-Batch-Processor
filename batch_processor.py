@@ -46,13 +46,16 @@ def ensure_output_folder(path):
     os.makedirs(path, exist_ok=True)
 
 
-def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
+def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_option):
     """
     Tiles a single image and returns a list of tile file paths.
-    
-    If pad_to_square is True, then if a tile is smaller than tile_size x tile_size,
-    the tile is pasted at the top-left corner of a new black image of size tile_size x tile_size.
-    This ensures the original image content remains anchored and any missing area is padded.
+
+    pad_option:
+      - "None": no extra processing for non-square tiles.
+      - "Auto Adjust": if a tile is smaller than tile_size x tile_size,
+          attempt to re-adjust the crop region so that (if possible) a full tile is extracted.
+      - "Pad to Square": if a tile is smaller than tile_size x tile_size,
+          paste the tile onto a new black image of size tile_size x tile_size.
     """
     if stop_event.is_set():
         return []
@@ -82,12 +85,23 @@ def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption
                 return tile_paths
             left = i * step
             upper = j * step
+            # Set initial crop bounds
             right = min(left + tile_size, image_width)
             lower = min(upper + tile_size, image_height)
+            
+            # For Auto Adjust: try to shift the crop so we get a full tile if possible.
+            if pad_option == "Auto Adjust":
+                if (right - left) < tile_size:
+                    # Shift left if possible so that right becomes tile_size away from left edge
+                    left = image_width - tile_size if image_width - tile_size >= 0 else left
+                    right = left + tile_size
+                if (lower - upper) < tile_size:
+                    upper = image_height - tile_size if image_height - tile_size >= 0 else upper
+                    lower = upper + tile_size
+
             tile = image.crop((left, upper, right, lower))
-            # If padding is enabled and the tile isn't full size,
-            # create a new black image and paste the tile at the top-left.
-            if pad_to_square:
+            # For Pad to Square option: pad with black if tile is not full-size.
+            if pad_option == "Pad to Square":
                 current_width, current_height = tile.size
                 if current_width != tile_size or current_height != tile_size:
                     new_tile = Image.new("RGB", (tile_size, tile_size), color=(0, 0, 0))
@@ -109,7 +123,7 @@ def tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption
     return tile_paths
 
 
-def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
+def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_option):
     """
     Tiles an entire folder of images. Returns (message, list_of_tile_paths).
     """
@@ -129,7 +143,7 @@ def process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, n
                 return "Process stopped by user.", all_tile_paths
             if filename.lower().endswith((".png", ".jpg", ".jpeg", ".heic", ".cr2", ".nef", ".arw", ".dng")):
                 image_path = os.path.join(folder_path, filename)
-                tile_paths = tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square)
+                tile_paths = tile_image(image_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_option)
                 all_tile_paths.extend(tile_paths)
                 if stop_event.is_set():
                     return "Process stopped by user.", all_tile_paths
@@ -155,9 +169,9 @@ def create_zip(output_path):
         return f"Error creating ZIP: {str(e)}"
 
 
-def on_tiling(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square):
+def on_tiling(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_option):
     """Gradio event handler for the Tiling tab."""
-    message, tile_paths = process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_to_square)
+    message, tile_paths = process_images_from_folder(folder_path, tile_size, overlap_ratio, padding, num_tiles, caption_text, output_path, output_format, pad_option)
     return message, tile_paths
 
 
@@ -370,10 +384,15 @@ def build_ui():
                     tile_size_input = gr.Number(value=1024, label="Tile Size (pixels)")
                     overlap_ratio_input = gr.Slider(0, 1, value=0.5, step=0.1, label="Overlap Ratio")
                     padding_input = gr.Number(value=10, label="Padding (pixels)")
-                    pad_to_square_checkbox = gr.Checkbox(label="Pad to Square (fill missing areas with black)", value=False)
                     num_tiles_input = gr.Number(value=0, label="Number of Tiles (0 = Use Tile Size)")
+                    # New dropdown for pad options
+                    pad_option_dropdown = gr.Dropdown(choices=["None", "Auto Adjust", "Pad to Square"],
+                                                        value="None",
+                                                        label="Pad Option")
                 caption_text_input = gr.Textbox(label="Manual Caption (Optional)")
-                output_format_input = gr.Radio(choices=["None", "JPG", "PNG"], value="None", label="Output Image Format")
+                output_format_input = gr.Radio(choices=["None", "JPG", "PNG"],
+                                               value="None",
+                                               label="Output Image Format")
                 tile_btn = gr.Button("Process Images")
                 stop_tile_btn = gr.Button("Stop")
                 tile_output = gr.Textbox(label="Status", interactive=False)
@@ -381,7 +400,8 @@ def build_ui():
                 zip_btn = gr.Button("Download Processed Tiles")
                 zip_output = gr.File(label="ZIP File")
                 tile_btn.click(on_tiling, 
-                               inputs=[folder_input, tile_size_input, overlap_ratio_input, padding_input, num_tiles_input, caption_text_input, output_path_input, output_format_input, pad_to_square_checkbox], 
+                               inputs=[folder_input, tile_size_input, overlap_ratio_input, padding_input, num_tiles_input,
+                                       caption_text_input, output_path_input, output_format_input, pad_option_dropdown], 
                                outputs=[tile_output, tile_gallery])
                 stop_tile_btn.click(stop_process, outputs=tile_output)
                 zip_btn.click(create_zip, inputs=output_path_input, outputs=zip_output)
