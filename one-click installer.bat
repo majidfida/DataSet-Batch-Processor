@@ -33,7 +33,7 @@ mkdir output_folder 2>nul
 
 :: Run the application
 echo Starting the application...
-python image_tiling_manual_caption.py
+python start_app.py
 
 :: Keep the window open
 pause

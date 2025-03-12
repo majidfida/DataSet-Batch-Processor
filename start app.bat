@@ -6,7 +6,7 @@ CALL venv\Scripts\activate
 
 :: Start the Python application
 echo Starting DataSet Batch Processor...
-python batch_processor.py
+python start_app.py
 
 :: Keep the window open
 pause
