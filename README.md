@@ -70,6 +70,7 @@ Run the script with:
 python batch_processor.py
 
 or use the provided start_app.bat.
+
 Changelog
 [New Update]
 
