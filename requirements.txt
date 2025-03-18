@@ -1,7 +1,6 @@
 gradio
 pillow
 tqdm
-opencv-python
 pillow-heif
 imageio
 numpy
